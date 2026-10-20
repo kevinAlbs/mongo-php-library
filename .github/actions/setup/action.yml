@@ -26,7 +26,7 @@ runs:
     # The extension version is resolved by a PHP script, so PHP is installed
     # first, without the extension. The second call below adds it.
     - name: Install PHP
-      uses: shivammathur/setup-php@v2
+      uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # 2.37.2
       with:
         coverage: none
         php-version: "${{ inputs.php-version }}"
