@@ -1,0 +1,30 @@
+name: "Test step summary rendering"
+
+# Sanity test for PR #2056 review discussion: does "::error::" written to
+# $GITHUB_STEP_SUMMARY render as an error annotation (it should not), compared
+# with the current emoji approach?
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  test:
+    name: "Render step summary variants"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Variant A - current approach: emoji in step summary"
+        run: |
+          echo "❌ Release failed: this line writes a ❌ emoji to \$GITHUB_STEP_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Variant B - review suggestion: ::error:: redirected into step summary"
+        run: |
+          echo "::error::Release failed: this line writes ::error:: to \$GITHUB_STEP_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Variant C - for comparison: ::error:: echoed to stdout"
+        run: |
+          echo "::error::Release failed: this line echoes ::error:: to stdout"
+
+      - name: "Variant D - Markdown heading in step summary"
+        run: |
+          echo "## Markdown heading written to \$GITHUB_STEP_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
