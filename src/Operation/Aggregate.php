@@ -231,13 +231,8 @@ final class Aggregate implements Explainable
             }
         }
 
-        $command = new Command(
-            $this->createCommandDocument(),
-            $this->createCommandOptions(),
-        );
-
         try {
-            $cursor = $this->executeCommand($server, $command);
+            $cursor = $this->executeCommand($server);
         } catch (ServerException $exception) {
             if (SearchNotSupportedException::isSearchNotSupportedError($exception)) {
                 throw SearchNotSupportedException::create($exception);
@@ -321,11 +316,10 @@ final class Aggregate implements Explainable
     /**
      * Execute the aggregate command using the appropriate Server method.
      *
-     * @see https://php.net/manual/en/mongodb-driver-server.executecommand.php
      * @see https://php.net/manual/en/mongodb-driver-server.executereadcommand.php
      * @see https://php.net/manual/en/mongodb-driver-server.executereadwritecommand.php
      */
-    private function executeCommand(Server $server, Command $command): CursorInterface
+    private function executeCommand(Server $server): CursorInterface
     {
         $options = [];
 
@@ -335,21 +329,67 @@ final class Aggregate implements Explainable
             }
         }
 
+        $cmd = $this->createCommandDocument();
+
         if (! $this->isWrite) {
-            return $server->executeReadCommand($this->databaseName, $command, $options);
+            return $server->executeReadCommand($this->databaseName, new Command($cmd, $this->createCommandOptions()), $options);
         }
 
         /* Server::executeReadWriteCommand() is the only method that reports a
-         * writeConcernError, and it ignores the "readPreference" option. Keep
-         * the generic command path when the read preference must be forwarded
-         * or when the server is a secondary: on a direct connection, libmongoc
-         * rewrites a primary read preference to primaryPreferred there. */
-        $readPreference = extract_read_preference_from_options($options);
+         * writeConcernError, and it ignores the "readPreference" option.
+         * Forward the read preference by injecting a "$readPreference" field
+         * in the command document, which replicates what libmongoc does for
+         * Server::executeCommand(). Remove this when the extension provides a
+         * command method that both honours a read preference and reports a
+         * writeConcernError: CDRIVER-6553 */
+        $readPreference = $this->createReadPreferenceDocument($server);
 
-        if ($server->isSecondary() || ($readPreference !== null && $readPreference->getModeString() !== ReadPreference::PRIMARY)) {
-            return $server->executeCommand($this->databaseName, $command, $options);
+        if ($readPreference !== null) {
+            /* Append after the command name: a leading "$" field would make
+             * libmongoc treat the document as a {$query: ...} wrapper. */
+            $cmd['$readPreference'] = $readPreference;
         }
 
-        return $server->executeReadWriteCommand($this->databaseName, $command, $options);
+        return $server->executeReadWriteCommand($this->databaseName, new Command($cmd, $this->createCommandOptions()), $options);
+    }
+
+    /**
+     * Returns the "$readPreference" document to inject in the command for the
+     * selected server, or null if the command must not carry one.
+     */
+    private function createReadPreferenceDocument(Server $server): ?array
+    {
+        $readPreference = extract_read_preference_from_options($this->options);
+
+        /* Server Selection Spec: "Type Standalone: clients MUST NOT send the
+         * read preference to the server" */
+        if ($server->getType() === Server::TYPE_STANDALONE) {
+            return null;
+        }
+
+        if ($readPreference === null || $readPreference->getModeString() === ReadPreference::PRIMARY) {
+            /* Server Selection Spec, topology type Single: "If no read
+             * preference is configured by the application, or if the
+             * application read preference is Primary, then $readPreference
+             * MUST be set to { "mode": "primaryPreferred" } to ensure that any
+             * server type can handle the request." Only a secondary needs it;
+             * a primary or mongos handles the request without it. */
+            return $server->isSecondary() ? ['mode' => 'primaryPreferred'] : null;
+        }
+
+        $cmd = ['mode' => $readPreference->getModeString()];
+
+        if ($readPreference->getTagSets() !== []) {
+            $cmd['tags'] = $readPreference->getTagSets();
+        }
+
+        if ($readPreference->getMaxStalenessSeconds() !== ReadPreference::NO_MAX_STALENESS) {
+            $cmd['maxStalenessSeconds'] = $readPreference->getMaxStalenessSeconds();
+        }
+
+        /* Hedge is not forwarded: ReadPreference::getHedge() is deprecated,
+         * and server selection above already honours it. */
+
+        return $cmd;
     }
 }
